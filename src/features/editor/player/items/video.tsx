@@ -23,11 +23,14 @@ export const Video = ({
 	const children = (
 		<div style={calculateMediaStyles(details, crop)}>
 			<OffthreadVideo
-				startFrom={(item.trim?.from! / 1000) * fps}
-				endAt={(item.trim?.to! / 1000) * fps || 1 / fps}
-				playbackRate={playbackRate}
+				startFrom={Math.round(((item.trim?.from ?? 0) / 1000) * fps)}
+				endAt={Math.max(
+					Math.round(((item.trim?.to ?? 0) / 1000) * fps),
+					Math.round(1 / fps)
+				)}
+				playbackRate={playbackRate ?? 1}
 				src={details.src}
-				volume={details.volume || 0 / 100}
+				volume={(details.volume ?? 0) / 100}
 			/>
 		</div>
 	);

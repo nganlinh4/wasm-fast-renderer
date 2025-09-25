@@ -31,16 +31,23 @@ export class AudioDataManager {
 			};
 			this.cleanupCache();
 		} catch (error) {
-			console.error(`Error loading audio data for ${src}:`, error);
+			console.warn(`Audio data issue for ${src}:`, error);
 
-			// If it's an EncodingError (no audio track), just ignore it
-			if (error instanceof Error && error.name === "EncodingError") {
-				console.log(`No audio track found for ${src}, ignoring`);
+			// If there's no audio track or the container lacks a supported video config, ignore gracefully
+			const msg = (error as any)?.message || "";
+			const name = (error as any)?.name || "";
+			if (
+				name === "EncodingError" ||
+				msg.includes("avcC") ||
+				msg.includes("hvcC") ||
+				msg.includes("VPX")
+			) {
+				console.warn(`No decodable track for ${src}, skipping audio visualization`);
 				return;
 			}
 
 			// For other errors, still throw them
-			throw error;
+			throw error as any;
 		}
 	}
 

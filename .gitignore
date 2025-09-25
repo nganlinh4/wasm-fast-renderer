@@ -39,3 +39,23 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+
+# rust renderer
+/renderer/target/
+/renderer/render_jobs/
+/renderer/*.exe
+/renderer/*.pdb
+
+# IDE/OS
+.vscode/
+.idea/
+Thumbs.db
+
+# env variants
+.env.local
+.env.*.local
+
+# logs/cache
+*.log
+.cache/

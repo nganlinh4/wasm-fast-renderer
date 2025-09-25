@@ -35,9 +35,10 @@ const Composition = () => {
 	});
 
 	const handleTextChange = (id: string, _: string) => {
-		const elRef = document.querySelector(`.id-${id}`) as HTMLDivElement;
-		const textDiv = elRef.firstElementChild?.firstElementChild
-			?.firstElementChild as HTMLDivElement;
+		const elRef = document.querySelector(`.id-${id}`) as HTMLDivElement | null;
+		if (!elRef) return;
+		const textDiv = elRef.firstElementChild?.firstElementChild?.firstElementChild as HTMLDivElement | undefined;
+		if (!textDiv) return;
 
 		const {
 			fontFamily,
@@ -70,9 +71,10 @@ const Composition = () => {
 	};
 
 	const onTextBlur = (id: string, _: string) => {
-		const elRef = document.querySelector(`.id-${id}`) as HTMLDivElement;
-		const textDiv = elRef.firstElementChild?.firstElementChild
-			?.firstElementChild as HTMLDivElement;
+		const elRef = document.querySelector(`.id-${id}`) as HTMLDivElement | null;
+		if (!elRef) return;
+		const textDiv = elRef.firstElementChild?.firstElementChild?.firstElementChild as HTMLDivElement | undefined;
+		if (!textDiv) return;
 		const {
 			fontFamily,
 			fontSize,

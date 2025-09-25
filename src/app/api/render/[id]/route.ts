@@ -28,7 +28,8 @@ export async function GET(
 		}
 
 		// Adapt to existing frontend contract: { video: { status, progress, url } }
-		return NextResponse.json({ video: { status: statusData.status, progress: statusData.progress, url: statusData.url } }, { status: 200 });
+		// Always return a same-origin URL to avoid CORS issues when downloading
+		return NextResponse.json({ video: { status: statusData.status, progress: statusData.progress, url: `/api/render/${id}/output` } }, { status: 200 });
 	} catch (error: any) {
 		console.error(error);
 		return NextResponse.json(

@@ -90,11 +90,29 @@ class Audio extends Trimmable {
 	}
 
 	private async initialize() {
-		const audioData = await getAudioData(this.src);
-		this.barData = audioData;
-		this.bars = this.getBars(0, 0) as any;
-		this.canvas?.requestRenderAll();
-		this.onScrollChange({ scrollLeft: 0 });
+		try {
+			const audioData = await getAudioData(this.src);
+			this.barData = audioData;
+			this.bars = this.getBars(0, 0) as any;
+		} catch (error) {
+			const msg = (error as any)?.message || "";
+			const name = (error as any)?.name || "";
+			if (
+				name === "EncodingError" ||
+				msg.includes("avcC") ||
+				msg.includes("hvcC") ||
+				msg.includes("VPX")
+			) {
+				console.warn(`No decodable track for ${this.src}, skipping waveform`);
+				this.barData = undefined;
+				this.bars = [] as any;
+			} else {
+				console.warn("Failed to load audio data", error);
+			}
+		} finally {
+			this.canvas?.requestRenderAll();
+			this.onScrollChange({ scrollLeft: 0 });
+		}
 	}
 
 	public setSrc(src: string) {

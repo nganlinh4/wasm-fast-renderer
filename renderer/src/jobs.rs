@@ -1,13 +1,12 @@
 use crate::types::StatusResponse;
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf, time::Instant};
+use std::{collections::HashMap, path::PathBuf, time::Instant, sync::Arc};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum JobStatus { Pending, Running, Completed, Failed }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Job {
     pub id: Uuid,
     pub status: JobStatus,
@@ -49,8 +48,14 @@ impl Job {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct JobStore(pub RwLock<HashMap<Uuid, Job>>);
+#[derive(Clone)]
+pub struct JobStore(pub Arc<RwLock<HashMap<Uuid, Job>>>);
+
+impl Default for JobStore {
+    fn default() -> Self {
+        Self(Arc::new(RwLock::new(HashMap::new())))
+    }
+}
 
 impl JobStore {
     pub async fn insert(&self, job: Job) -> Uuid {

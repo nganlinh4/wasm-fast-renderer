@@ -57,6 +57,7 @@ class Video extends Trimmable {
 	public filmstripBacklogOptions?: FilmstripBacklogOptions;
 	public thumbnailsPerSegment = 0;
 	public segmentSize = 0;
+	private clipDisabled = false;
 
 	public offscreenSegments = 0;
 	public thumbnailWidth = 0;
@@ -141,26 +142,37 @@ class Video extends Trimmable {
 		this.canvas?.requestRenderAll();
 
 		this.createFallbackPattern();
-		await this.prepareAssets();
+		if (!this.clipDisabled) {
+			await this.prepareAssets();
+		}
 
 		this.onScrollChange({ scrollLeft: 0 });
 	}
 
 	public async prepareAssets() {
-		const file = await getFileFromUrl(this.src);
-		const stream = file.stream();
-
-		// Dynamically import MP4Clip only on the client side
-		if (typeof window !== "undefined") {
-			try {
-				const { MP4Clip } = await import("@designcombo/frames");
-				this.clip = new MP4Clip(stream);
-			} catch (error) {
-				console.warn("Failed to load MP4Clip:", error);
+		try {
+			const file = await getFileFromUrl(this.src);
+			const stream = file.stream();
+			if (typeof window !== "undefined") {
+				try {
+					const { MP4Clip } = await import("@designcombo/frames");
+					this.clip = new MP4Clip(stream);
+				} catch (error) {
+					const msg = (error as any)?.message || "";
+					if (msg.includes("avcC") || msg.includes("hvcC") || msg.includes("VPX")) {
+						console.warn("Unsupported MP4 container for thumbnails, disabling filmstrip.");
+						this.clipDisabled = true;
+						this.clip = null;
+						return;
+					}
+					console.warn("Failed to load MP4Clip:", error);
+					this.clip = null;
+				}
+			} else {
 				this.clip = null;
 			}
-		} else {
-			// Server-side rendering - skip MP4Clip initialization
+		} catch (e) {
+			console.warn("Failed to prepareAssets, skipping filmstrip:", e);
 			this.clip = null;
 		}
 	}
@@ -386,8 +398,11 @@ class Video extends Trimmable {
 	public async setSrc(src: string) {
 		super.setSrc(src);
 		this.clip = null;
+		this.clipDisabled = false; // reset for new source
 		await this.initialize();
-		await this.prepareAssets();
+		if (!this.clipDisabled) {
+			await this.prepareAssets();
+		}
 		this.thumbnailCache.clearCacheButFallback();
 		this.onScale();
 	}

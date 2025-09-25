@@ -1,4 +1,4 @@
-use crate::types::{Design, Details, TrackItem, TrackType};
+use crate::types::{Design, TrackItem, TrackType};
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{fs, path::{Path, PathBuf}};
@@ -57,11 +57,13 @@ pub fn compute_duration_ms(design: &Design) -> u64 {
         design.trackItemsMap.values().collect()
     };
     for it in items {
-        let start = it.trim.from.unwrap_or(0);
-        let end = it.trim.to.unwrap_or(0);
-        if end > max_end { max_end = end; }
-        // In case only width/height video with no trim provided, ignore.
+        let trim_end = it.trim.to.unwrap_or(0);
+        if trim_end > max_end { max_end = trim_end; }
+        // Consider display window if provided
+        let disp_end = it.display.to.unwrap_or(0);
+        if disp_end > max_end { max_end = disp_end; }
     }
+    // Fallback minimal duration
     if max_end == 0 { 10_000 } else { max_end }
 }
 
@@ -82,19 +84,35 @@ pub fn build_ffmpeg_command(
     design: &Design,
     assets: &[(usize, &TrackItem, PathBuf)],
     caps: &BackendCaps,
+    font_map: &std::collections::HashMap<String, PathBuf>,
 ) -> Result<BuiltCommand> {
     fs::create_dir_all(workdir).ok();
     let out_path = workdir.join("output.mp4");
     let mut args: Vec<String> = vec!["-y".into(), "-hide_banner".into(), "-loglevel".into(), "error".into()];
     if caps.nvenc { args.extend(["-hwaccel".into(), "cuda".into()]); }
+    let fps = design.fps.unwrap_or(30);
+    let (out_w, out_h) = (
+        design.size.as_ref().map(|s| s.width).unwrap_or(1080),
+        design.size.as_ref().map(|s| s.height).unwrap_or(1920),
+    );
+    let duration_ms = compute_duration_ms(design);
+    let duration_s = (duration_ms as f64) / 1000.0;
 
-    // Inputs
+    // Base black canvas as input 0
+    args.extend([
+        "-f".into(), "lavfi".into(),
+        "-i".into(), format!("color=c=black:s={}x{}:r={}:d={}", out_w, out_h, fps, duration_s),
+    ]);
+
+
+    // Asset inputs start from index 1 (index 0 is the base canvas)
     for (_, item, path) in assets {
         match item.kind {
             TrackType::Image => {
-                // images need looping to video duration; loop via -loop 1 for input
+                // images need looping to act as a video stream; visibility is gated in filters
                 args.extend(["-loop".into(), "1".into()]);
-                args.extend(["-t".into(), format!("{}", compute_duration_ms(design) as f32 / 1000.0)]);
+                // ensure finite duration to avoid infinite streams that stall the graph
+                args.extend(["-t".into(), format!("{:.3}", duration_s)]);
             }
             _ => {}
         }
@@ -104,13 +122,16 @@ pub fn build_ffmpeg_command(
     // Build filter graph
     // Label each input video/image as v{i}, audio as a{i}
     let mut filter_parts: Vec<String> = Vec::new();
-    let mut video_labels: Vec<String> = Vec::new();
     let mut audio_labels: Vec<String> = Vec::new();
 
-    for (idx, item, _) in assets {
+    // Start from base canvas as the initial video
+    let mut last = String::from("0:v");
+
+    for (idx0, item, _) in assets {
         match item.kind {
             TrackType::Video | TrackType::Image => {
-                let mut chain = format!("[{}:v]", idx);
+                let ff_idx = idx0 + 1; // account for base canvas at 0
+                let mut chain = format!("[{}:v]format=rgba", ff_idx);
                 // scale
                 let (w, h) = (
                     item.details.as_ref().and_then(|d| d.width).unwrap_or_else(|| design.size.as_ref().map(|s| s.width).unwrap_or(1080)),
@@ -118,44 +139,75 @@ pub fn build_ffmpeg_command(
                 );
                 let scale = parse_scale(&item.details.as_ref().and_then(|d| d.transform.clone()));
                 let (sw, sh) = (((w as f32) * scale) as i32, ((h as f32) * scale) as i32);
-                chain.push_str(&format!("scale={}:{},format=rgba", sw.max(1), sh.max(1)));
+                chain.push_str(&format!(",scale={}:{}", sw.max(1), sh.max(1)));
+                // rotate (degrees to radians)
+                if let Some(rot) = item.details.as_ref().and_then(|d| d.rotate.clone()) {
+                    if let Ok(deg) = rot.trim().trim_end_matches("deg").parse::<f32>() { if deg.abs() > 0.01 { chain.push_str(&format!(",rotate={:.6}*PI/180", deg)); } }
+                }
                 // brightness (eq)
                 let b = brightness_offset(item.details.as_ref().and_then(|d| d.brightness));
                 if b.abs() > 0.001 { chain.push_str(&format!(",eq=brightness={}", b)); }
                 // opacity
                 let a = opacity_alpha(item.details.as_ref().and_then(|d| d.opacity));
                 if a < 0.999 { chain.push_str(&format!(",colorchannelmixer=aa={}", a)); }
-                let vlabel = format!("v{}", idx);
+                let vlabel = format!("v{}", ff_idx);
                 chain.push_str(&format!("[{}]", vlabel));
                 filter_parts.push(chain);
-                video_labels.push(vlabel);
+
+                // overlay onto last with timing window
+                let x = parse_px(&item.details.as_ref().and_then(|d| d.left.clone()));
+                let y = parse_px(&item.details.as_ref().and_then(|d| d.top.clone()));
+                let start = item.display.from.or(item.trim.from).unwrap_or(0) as f64 / 1000.0;
+                let end_ms = item.display.to.or(item.trim.to).unwrap_or(duration_ms);
+                let end = (end_ms as f64) / 1000.0;
+                let out = format!("m{}", ff_idx);
+                filter_parts.push(format!("[{}][{}]overlay={}:{}:format=auto:enable='between(t,{:.3},{:.3})'[{}]", last, vlabel, x, y, start, end, out));
+                last = out;
             }
             TrackType::Audio => {
-                let alabel = format!("a{}", idx);
+                // Will be handled in audio mixing section, collect labels then
+                let ff_idx = idx0 + 1;
                 let vol = item.details.as_ref().and_then(|d| d.volume).unwrap_or(100.0) / 100.0;
-                filter_parts.push(format!("[{}:a]volume={}[{}]", idx, vol, alabel));
+                let start_ms = item.display.from.or(item.trim.from).unwrap_or(0);
+                let mut alabel = format!("a{}", ff_idx);
+                let mut chain = format!("[{}:a]volume={}", ff_idx, vol);
+                if let Some(from) = item.trim.from { chain.push_str(&format!(",atrim=start={:.3}", (from as f64)/1000.0)); chain.push_str(",asetpts=PTS-STARTPTS"); }
+                chain.push_str(&format!(",adelay={}:all=1", start_ms));
+                chain.push_str(&format!(",atrim=0:{:.3},asetpts=PTS-STARTPTS[{}]", duration_ms as f64 / 1000.0, alabel));
+                filter_parts.push(chain);
                 audio_labels.push(alabel);
             }
             _ => {}
         }
     }
 
-    // Compose overlays: take first video as base; overlay others by left/top
-    if video_labels.is_empty() { return Err(anyhow!("No video/image tracks provided")); }
-    let mut last = video_labels[0].clone();
-    for (i, (idx, item, _)) in assets.iter().enumerate() {
-        if i == 0 { continue; }
-        match item.kind {
-            TrackType::Video | TrackType::Image => {
-                let x = parse_px(&item.details.as_ref().and_then(|d| d.left.clone()));
-                let y = parse_px(&item.details.as_ref().and_then(|d| d.top.clone()));
-                let cur = video_labels.iter().find(|l| *l == &format!("v{}", idx)).unwrap().clone();
-                let out = format!("m{}", i);
-                // CPU overlay for broad compatibility; can switch to overlay_cuda later
-                filter_parts.push(format!("[{}][{}]overlay={}:{}[{}]", last, cur, x, y, out));
-                last = out;
+    // Text overlays
+    let items_all: Vec<&TrackItem> = if !design.trackItems.is_empty() { design.trackItems.iter().collect() } else { design.trackItemsMap.values().collect() };
+    for it in items_all {
+        if let TrackType::Text = it.kind {
+            if let Some(id) = &it.id {
+                if let Some(font_path) = font_map.get(id) {
+                    let mut text = it.details.as_ref().and_then(|d| d.text.clone()).unwrap_or_default();
+                    text = text.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:");
+                    let fontsize = it.details.as_ref().and_then(|d| d.fontSize).unwrap_or(48);
+                    let x = parse_px(&it.details.as_ref().and_then(|d| d.left.clone()));
+                    let y = parse_px(&it.details.as_ref().and_then(|d| d.top.clone()));
+                    let alpha = opacity_alpha(it.details.as_ref().and_then(|d| d.opacity));
+                    let color = it.details.as_ref().and_then(|d| d.color.clone()).unwrap_or("white".into());
+                    let fontcolor = if color.starts_with('#') { format!("0x{}@{}", color.trim_start_matches('#'), alpha) } else { format!("{}@{}", color, alpha) };
+                    let borderw = it.details.as_ref().and_then(|d| d.borderWidth).unwrap_or(0);
+                    let bordercolor = it.details.as_ref().and_then(|d| d.borderColor.clone()).unwrap_or("black".into());
+                    let bordercolor = if bordercolor.starts_with('#') { format!("0x{}", bordercolor.trim_start_matches('#')) } else { bordercolor };
+                    let start = it.display.from.unwrap_or(0) as f64 / 1000.0;
+                    let end = it.display.to.unwrap_or(duration_ms) as f64 / 1000.0;
+                    let out = format!("txt{}", id);
+                    filter_parts.push(format!(
+                        "[{}]drawtext=fontfile={}:text='{}':fontsize={}:fontcolor={}:borderw={}:bordercolor={}:x={}:y={}:enable='between(t,{:.3},{:.3})'[{}]",
+                        last, font_path.to_string_lossy(), text, fontsize, fontcolor, borderw, bordercolor, x, y, start, end, out
+                    ));
+                    last = out;
+                }
             }
-            _ => {}
         }
     }
 
@@ -168,7 +220,6 @@ pub fn build_ffmpeg_command(
         if audio_labels.len() == 1 {
             filter_parts.push(format!("[{}]anull[aout]", audio_labels[0]));
         } else {
-            let inputs = audio_labels.join("");
             let list = audio_labels.iter().map(|l| format!("[{}]", l)).collect::<String>();
             filter_parts.push(format!("{}amix=inputs={}:normalize=0[aout]", list, audio_labels.len()));
         }
@@ -186,6 +237,8 @@ pub fn build_ffmpeg_command(
             if caps.nvenc { args.extend(["-c:v".into(), "h264_nvenc".into(), "-preset".into(), "p4".into()]); }
             else { args.extend(["-c:v".into(), "libx264".into(), "-preset".into(), "veryfast".into()]); }
             args.extend(["-pix_fmt".into(), "yuv420p".into()]);
+            // Honor desired fps from design/options
+            args.extend(["-r".into(), fps.to_string()]);
         } else if kind == "a" {
             mapped_audio = true;
             args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "192k".into()]);

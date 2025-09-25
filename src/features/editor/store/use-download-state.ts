@@ -91,7 +91,7 @@ export const useDownloadState = create<DownloadState>((set, get) => ({
 
 					if (status === "COMPLETED") {
 						set({ exporting: false, output: { url, type: get().exportType } });
-					} else if (status === "PENDING") {
+					} else if (status === "PENDING" || status === "RUNNING") {
 						setTimeout(checkStatus, 2500);
 					}
 				};
