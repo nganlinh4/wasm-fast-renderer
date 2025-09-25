@@ -1,29 +1,25 @@
 import { NextResponse } from "next/server";
 
+const RENDER_PORT = process.env.RENDER_PORT || "6108";
+const RENDER_BASE = process.env.RENDER_BASE || `http://127.0.0.1:${RENDER_PORT}`;
 
 export async function POST(request: Request) {
 	try {
-		const body = await request.json(); // Parse the request body
-
-
-		const response = await fetch("https://api.combo.sh/v1/render", {
+		const body = await request.json();
+		const response = await fetch(`${RENDER_BASE}/render`, {
 			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer cb_bYQbTtE7Yb7R", // JWT Token from environment
-			},
+			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),
 		});
-
 		const responseData = await response.json();
 		if (!response.ok) {
 			return NextResponse.json(
-				{ message: responseData?.message || "Failed render json to video" },
+				{ message: responseData?.message || "Failed to start local render" },
 				{ status: response.status },
 			);
 		}
-
-		return NextResponse.json(responseData, { status: 200 });
+		// Adapt to existing frontend contract: { video: { id } }
+		return NextResponse.json({ video: { id: responseData.jobId } }, { status: 200 });
 	} catch (error) {
 		console.error(error);
 		return NextResponse.json(
@@ -36,7 +32,6 @@ export async function POST(request: Request) {
 export async function GET(request: Request) {
 	try {
 		const { searchParams } = new URL(request.url);
-		const type = searchParams.get("type");
 		const id = searchParams.get("id");
 		if (!id) {
 			return NextResponse.json(
@@ -44,26 +39,13 @@ export async function GET(request: Request) {
 				{ status: 400 },
 			);
 		}
-		if (!type) {
-			return NextResponse.json(
-				{ message: "type parameter is required" },
-				{ status: 400 },
-			);
-		}
-
-		const response = await fetch(`https://api.combo.sh/v1/render/${id}`, {
-			headers: {
-				Authorization: `Bearer ${process.env.COMBO_SH_JWT}`, // JWT Token from environment
-			},
-		});
-
+		const response = await fetch(`${RENDER_BASE}/render/${id}`, { cache: "no-store" });
 		if (!response.ok) {
 			return NextResponse.json(
-				{ message: "Failed to fetch export status" },
+				{ message: "Failed to fetch local render status" },
 				{ status: response.status },
 			);
 		}
-
 		const statusData = await response.json();
 		return NextResponse.json(statusData, { status: 200 });
 	} catch (error) {

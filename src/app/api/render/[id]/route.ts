@@ -1,4 +1,8 @@
 import { NextResponse } from "next/server";
+
+const RENDER_PORT = process.env.RENDER_PORT || "6108";
+const RENDER_BASE = process.env.RENDER_BASE || `http://127.0.0.1:${RENDER_PORT}`;
+
 export async function GET(
 	request: Request,
 	{ params }: { params: Promise<{ id: string }> },
@@ -12,13 +16,7 @@ export async function GET(
 			);
 		}
 
-		const response = await fetch(`https://api.combo.sh/v1/render/${id}`, {
-			headers: {
-				Authorization: "Bearer cb_bYQbTtE7Yb7R", // JWT Token from environment
-			},
-			cache: "no-store",
-		});
-
+		const response = await fetch(`${RENDER_BASE}/render/${id}`, { cache: "no-store" });
 		const statusData = await response.json();
 
 		if (!response.ok) {
@@ -29,10 +27,10 @@ export async function GET(
 			throw error;
 		}
 
-		return NextResponse.json(statusData, { status: 200 });
+		// Adapt to existing frontend contract: { video: { status, progress, url } }
+		return NextResponse.json({ video: { status: statusData.status, progress: statusData.progress, url: statusData.url } }, { status: 200 });
 	} catch (error: any) {
 		console.error(error);
-
 		return NextResponse.json(
 			{ message: "Internal server error" },
 			{ status: 500 },
